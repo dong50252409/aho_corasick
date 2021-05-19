@@ -36,8 +36,8 @@ do_build(StrList, Output) ->
 %% 构建前缀树结构
 do_build_success([Str | T], MaxState, SuccessMap, OutputMap) ->
     RootState = 0,
-    {NewMaxState, NewSuccessMap} = do_build_success_1(Str, RootState, MaxState, SuccessMap),
-    NewOutputMap = OutputMap#{NewMaxState => length(unicode:characters_to_list(Str))},
+    {CurState, NewMaxState, NewSuccessMap} = do_build_success_1(Str, RootState, MaxState, SuccessMap),
+    NewOutputMap = OutputMap#{CurState => length(unicode:characters_to_list(Str))},
     do_build_success(T, NewMaxState, NewSuccessMap, NewOutputMap);
 do_build_success([], _NewMaxState, SuccessMap, Output) ->
     {SuccessMap, Output}.
@@ -55,8 +55,8 @@ do_build_success_1(<<Word/utf8, T/binary>>, CurState, MaxState, SuccessMap) ->
             SuccessMap1 = SuccessMap#{CurState => #{Word => MaxState1}},
             do_build_success_1(T, MaxState1, MaxState1, SuccessMap1)
     end;
-do_build_success_1(<<>>, _CurState, MaxState, SuccessMap) ->
-    {MaxState, SuccessMap}.
+do_build_success_1(<<>>, CurState, MaxState, SuccessMap) ->
+    {CurState, MaxState, SuccessMap}.
 
 %% 基于宽度优先构建失配结构
 do_build_failure([ParentState | T], SuccessMap, FailureMap) ->
@@ -104,19 +104,15 @@ gen_ac_file(WriteDir, SuccessMap, FailureMap, OutputMap) ->
     file:write_file(Filename, <<Head/binary, Success/binary, Failure/binary>>).
 
 gen_head() ->
-    <<"-module(ac_tree).\n\n-compile([deterministic, no_line_info]).\n\n-export([success/2, failure/1]).\n\n">>.
+    <<"-module(ac_tree).\n\n-compile([deterministic, no_line_info]).\n\n-export([success/1, failure/1]).\n\n">>.
 
 gen_success(SuccessMap) ->
-    Fun = fun(State, ChildSuccessMap, Acc) ->
-        gen_success_1(State, maps:to_list(ChildSuccessMap), Acc) end,
+    Fun =
+        fun(State, ChildSuccessMap, Acc) ->
+            <<Acc/binary, "success(", (integer_to_binary(State))/binary, ") -> ", (iolist_to_binary(io_lib:format(<<"~w">>, [ChildSuccessMap])))/binary, ";\n">>
+        end,
     Content = maps:fold(Fun, <<>>, SuccessMap),
-    <<Content/binary, "success(_, _) -> false.\n\n">>.
-
-gen_success_1(State, [{Word, NextState} | T], Acc) ->
-    SubContent = <<"success(", (integer_to_binary(Word))/binary, ", ", (integer_to_binary(State))/binary, ") -> ", (integer_to_binary(NextState))/binary, ";\n">>,
-    gen_success_1(State, T, <<Acc/binary, SubContent/binary>>);
-gen_success_1(_State, [], Acc) ->
-    Acc.
+    <<Content/binary, "success(_) -> false.\n\n">>.
 
 gen_failure(FailureMap, OutputMap) ->
     Fun1 =
