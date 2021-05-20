@@ -1,6 +1,6 @@
 -module(aho_corasick).
 
--export([matches/1, is_pattern/1]).
+-export([matches/1, is_pattern/1, replace/1, replace/2]).
 
 -spec matches(Subject :: binary()) -> Found :: [binary:part()].
 matches(Subject) ->
@@ -64,3 +64,41 @@ is_pattern_2(State) when State > 0 ->
     end;
 is_pattern_2(_State) ->
     false.
+
+-spec replace(Subject :: binary()) -> Result :: binary().
+replace(Subject) ->
+    replace(Subject, <<"*"/utf8>>).
+
+-spec replace(Subject :: binary(), Replacement :: binary()) -> Result :: binary().
+replace(Subject, Replacement) ->
+    RootState = 0,
+    replace_1(Subject, RootState, Replacement, []).
+
+replace_1(<<Word/utf8, T/binary>> = Subject, State, Replacement, Result) ->
+    case ac_tree:success(State) of
+        #{Word := NextState} ->
+            Result1 = try_replace(NextState, Replacement, [Word | Result]),
+            replace_1(T, NextState, Replacement, Result1);
+        _ when State =:= 0 ->
+            replace_1(T, State, Replacement, [Word | Result]);
+        _ ->
+            {NewState, _} = ac_tree:failure(State),
+            replace_1(Subject, NewState, Replacement, Result)
+    end;
+replace_1(<<>>, _State, _Replacement, Result) ->
+    unicode:characters_to_binary(lists:reverse(Result), unicode).
+
+try_replace(State, Replacement, Result) when State > 0 ->
+    case ac_tree:failure(State) of
+        {NewState, undefined} ->
+            try_replace(NewState, Replacement, Result);
+        {_NewState, Len} ->
+            do_replace(Result, Replacement, Len)
+    end;
+try_replace(_State, _Replacement, Result) ->
+    Result.
+
+do_replace([_ | T], Replacement, Len) when Len > 0 ->
+    [Replacement | do_replace(T, Replacement, Len - 1)];
+do_replace(T, _Replacement, _Len) ->
+    T.
