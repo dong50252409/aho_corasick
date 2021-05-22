@@ -1,104 +1,154 @@
 -module(aho_corasick).
 
+%% API
+-export([gen_by_filename/1, gen_by_list/1]).
 -export([matches/1, is_pattern/1, replace/1, replace/2]).
 
--spec matches(Subject :: binary()) -> Found :: [binary:part()].
-matches(Subject) ->
+-define(MOD, acs).
+
+gen_by_filename(Filename) ->
+    case file:read_file(Filename) of
+        {ok, Content} ->
+            StrList = binary:split(unicode:characters_to_binary(Content), [<<"\r\n">>, <<"\n">>], [trim_all, global]),
+            do_build(StrList);
+        Err ->
+            Err
+    end.
+
+gen_by_list(StrList) ->
+    do_build(StrList).
+
+%% 构建AC算法所需的必要结构
+do_build(StrList) ->
+    RootState = 0,                                  % 从根节点开始遍历
+    SuccessMap = #{},                               % 前缀树结构
+    OutputMap = #{},                                % 匹配上的字符串输出结构
+    FailureMap = #{},                               % 创建失配结构
+    {NewSuccessMap, NewOutputMap} = do_build_success(StrList, RootState, SuccessMap, OutputMap),
+    NewFailureMap = do_build_failure([RootState], NewSuccessMap, FailureMap),
+    gen_ac_file(NewSuccessMap, NewFailureMap, NewOutputMap).
+
+%% 构建前缀树结构
+do_build_success([Str | T], MaxState, SuccessMap, OutputMap) ->
     RootState = 0,
-    Index = 1,
-    matches_1(Subject, RootState, Index).
+    {CurState, NewMaxState, NewSuccessMap} = do_build_success_1(Str, RootState, MaxState, SuccessMap),
+    NewOutputMap = OutputMap#{CurState => length(unicode:characters_to_list(Str))},
+    do_build_success(T, NewMaxState, NewSuccessMap, NewOutputMap);
+do_build_success([], _NewMaxState, SuccessMap, Output) ->
+    {SuccessMap, Output}.
 
-matches_1(<<Word/utf8, T/binary>> = Subject, State, Index) ->
-    case ac_tree:success(State) of
-        #{Word := NextState} ->
-            Pattern = matches_1(T, NextState, Index + 1),
-            get_output(NextState, Index) ++ Pattern;
-        _ when State =:= 0 ->
-            matches_1(T, State, Index + 1);
-        _ ->
-            {NewState, _} = ac_tree:failure(State),
-            matches_1(Subject, NewState, Index)
+do_build_success_1(<<Word/utf8, T/binary>>, CurState, MaxState, SuccessMap) ->
+    case SuccessMap of
+        #{CurState := #{Word := NextState}} ->
+            do_build_success_1(T, NextState, MaxState, SuccessMap);
+        #{CurState := ChildSuccessMap} ->
+            MaxState1 = MaxState + 1,
+            SuccessMap1 = SuccessMap#{CurState := ChildSuccessMap#{Word => MaxState1}},
+            do_build_success_1(T, MaxState1, MaxState1, SuccessMap1);
+        #{} ->
+            MaxState1 = MaxState + 1,
+            SuccessMap1 = SuccessMap#{CurState => #{Word => MaxState1}},
+            do_build_success_1(T, MaxState1, MaxState1, SuccessMap1)
     end;
-matches_1(<<>>, _State, _Index) ->
-    [].
+do_build_success_1(<<>>, CurState, MaxState, SuccessMap) ->
+    {CurState, MaxState, SuccessMap}.
 
-get_output(State, Index) when State > 0 ->
-    case ac_tree:failure(State) of
-        {NewState, undefined} ->
-            get_output(NewState, Index);
-        {NewState, Len} ->
-            [{Index - Len, Len} | get_output(NewState, Index)]
+%% 基于宽度优先构建失配结构
+do_build_failure([ParentState | T], SuccessMap, FailureMap) ->
+    case SuccessMap of
+        #{ParentState := ChildSuccessMap} ->
+            Iter = maps:iterator(ChildSuccessMap),
+            {NextStateList, NewFailureMap} = do_build_failure_1(maps:next(Iter), ParentState, SuccessMap, FailureMap),
+            do_build_failure(T ++ NextStateList, SuccessMap, NewFailureMap);
+        #{} ->
+            do_build_failure(T, SuccessMap, FailureMap)
     end;
-get_output(_State, _Index) ->
-    [].
+do_build_failure([], _SuccessMap, FailureMap) ->
+    FailureMap.
 
--spec is_pattern(Subject :: binary()) -> boolean().
-is_pattern(Subject) ->
-    RootState = 0,
-    is_pattern_1(Subject, RootState).
+do_build_failure_1({Char, State, NextIter}, ParentState, SuccessMap, FailureMap) when ParentState > 0 ->
+    FailureState = maps:get(ParentState, FailureMap, 0),
+    ChildSuccessMap = maps:get(FailureState, SuccessMap),
+    Iter = maps:iterator(ChildSuccessMap),
+    NewFailureMap = do_find_failure_node(maps:next(Iter), Char, State, SuccessMap, FailureMap),
+    {NextStateList, NewFailureMap1} = do_build_failure_1(maps:next(NextIter), ParentState, SuccessMap, NewFailureMap),
+    {[State | NextStateList], NewFailureMap1};
+do_build_failure_1({_Char, State, NextIter}, ParentState, SuccessMap, FailureMap) ->
+    {NextStateList, NewFailureMap} = do_build_failure_1(maps:next(NextIter), ParentState, SuccessMap, FailureMap),
+    {[State | NextStateList], NewFailureMap};
+do_build_failure_1(none, _ParentState, _SuccessMap, FailureMap) ->
+    {[], FailureMap}.
 
-is_pattern_1(<<Word/utf8, T/binary>>, State) ->
-    case ac_tree:success(State) of
-        #{Word := NextState} ->
-            case is_pattern_2(NextState) of
+do_find_failure_node({Char, ParentState, _NextIter}, Char, State, SuccessMap, FailureMap) ->
+    case maps:is_key(ParentState, SuccessMap) of
+        true ->
+            FailureMap#{State => ParentState};
+        false ->
+            FailureMap
+    end;
+do_find_failure_node({_ParentChar, _ParentState, NextIter}, Char, State, SuccessMap, FailureMap) ->
+    do_find_failure_node(maps:next(NextIter), Char, State, SuccessMap, FailureMap);
+do_find_failure_node(none, _Char, _State, _SuccessMap, FailureMap) ->
+    FailureMap.
+
+gen_ac_file(SuccessMap, FailureMap, OutputMap) ->
+    ModStr = atom_to_list(?MOD),
+    {ok, Content} = file:read_file(code:priv_dir(aho_corasick) ++ "/" ++ ModStr ++ ".template"),
+    Success = gen_success(SuccessMap),
+    Failure = gen_failure(FailureMap, OutputMap),
+    Forms = scan_and_parse(unicode:characters_to_list(<<Content/binary, Success/binary, Failure/binary>>), 1),
+    {ok, ?MOD, Binary} = compile:forms(Forms, [deterministic, no_line_info]),
+    {module, ?MOD} = code:load_binary(?MOD, ?MOD, Binary),
+    ok = file:write_file(code:lib_dir(aho_corasick) ++ "/ebin/" ++ ModStr ++ ".beam", Binary).
+
+gen_success(SuccessMap) ->
+    Fun =
+        fun(State, ChildSuccessMap, Acc) ->
+            <<Acc/binary, "success(", (integer_to_binary(State))/binary, ") -> ", (iolist_to_binary(io_lib:format(<<"~w">>, [ChildSuccessMap])))/binary, ";\n">>
+        end,
+    Content = maps:fold(Fun, <<>>, SuccessMap),
+    <<Content/binary, "success(_) -> false.\n\n">>.
+
+gen_failure(FailureMap, OutputMap) ->
+    Fun1 =
+        fun(State, NextState, Acc) ->
+            case OutputMap of
+                #{State := Len} ->
+                    <<Acc/binary, "failure(", (integer_to_binary(State))/binary, ") -> {", (integer_to_binary(NextState))/binary, ", ", (integer_to_binary(Len))/binary, "};\n">>;
+                #{} ->
+                    <<Acc/binary, "failure(", (integer_to_binary(State))/binary, ") -> {", (integer_to_binary(NextState))/binary, ", undefined};\n">>
+            end
+        end,
+    Content1 = maps:fold(Fun1, <<>>, FailureMap),
+    Fun2 =
+        fun(State, Len, Acc) ->
+            case maps:is_key(State, FailureMap) of
                 true ->
-                    true;
+                    Acc;
                 false ->
-                    is_pattern_1(T, NextState)
-            end;
-        _ when State =:= 0 ->
-            is_pattern_1(T, State);
-        _ ->
-            {NewState, _} = ac_tree:failure(State),
-            is_pattern_1(<<Word/utf8, T/binary>>, NewState)
-    end;
-is_pattern_1(<<>>, _State) ->
-    false.
+                    <<Acc/binary, "failure(", (integer_to_binary(State))/binary, ") -> {0", ", ", (integer_to_binary(Len))/binary, "};\n">>
+            end
+        end,
+    Content2 = maps:fold(Fun2, <<>>, OutputMap),
+    <<Content1/binary, Content2/binary, "failure(_) -> {0, undefined}.\n\n">>.
 
-is_pattern_2(State) when State > 0 ->
-    case ac_tree:failure(State) of
-        {NewState, undefined} ->
-            is_pattern_2(NewState);
-        _ ->
-            true
-    end;
-is_pattern_2(_State) ->
-    false.
+scan_and_parse(Text, Line) ->
+    case erl_scan:tokens([], Text, Line) of
+        {done, {ok, Tokens, NLine}, T} ->
+            {ok, Forms} = erl_parse:parse_form(Tokens),
+            [Forms | scan_and_parse(T, NLine)];
+        {more, _Continuation} ->
+            []
+    end.
 
--spec replace(Subject :: binary()) -> Result :: binary().
+matches(Subject) ->
+    ?MOD:matches(Subject).
+
+is_pattern(Subject) ->
+    ?MOD:is_pattern(Subject).
+
 replace(Subject) ->
-    replace(Subject, <<"*"/utf8>>).
+    ?MOD:replace(Subject, <<"*"/utf8>>).
 
--spec replace(Subject :: binary(), Replacement :: binary()) -> Result :: binary().
 replace(Subject, Replacement) ->
-    RootState = 0,
-    replace_1(Subject, RootState, Replacement, []).
-
-replace_1(<<Word/utf8, T/binary>> = Subject, State, Replacement, Result) ->
-    case ac_tree:success(State) of
-        #{Word := NextState} ->
-            Result1 = try_replace(NextState, Replacement, [Word | Result]),
-            replace_1(T, NextState, Replacement, Result1);
-        _ when State =:= 0 ->
-            replace_1(T, State, Replacement, [Word | Result]);
-        _ ->
-            {NewState, _} = ac_tree:failure(State),
-            replace_1(Subject, NewState, Replacement, Result)
-    end;
-replace_1(<<>>, _State, _Replacement, Result) ->
-    unicode:characters_to_binary(lists:reverse(Result), unicode).
-
-try_replace(State, Replacement, Result) when State > 0 ->
-    case ac_tree:failure(State) of
-        {NewState, undefined} ->
-            try_replace(NewState, Replacement, Result);
-        {_NewState, Len} ->
-            do_replace(Result, Replacement, Len)
-    end;
-try_replace(_State, _Replacement, Result) ->
-    Result.
-
-do_replace([_ | T], Replacement, Len) when Len > 0 ->
-    [Replacement | do_replace(T, Replacement, Len - 1)];
-do_replace(T, _Replacement, _Len) ->
-    T.
+    ?MOD:replace(Subject, Replacement).
