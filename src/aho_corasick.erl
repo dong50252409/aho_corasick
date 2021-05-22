@@ -1,32 +1,30 @@
 -module(aho_corasick).
 
 %% API
--export([gen_by_filename/1, gen_by_list/1]).
--export([matches/1, is_pattern/1, replace/1, replace/2]).
+-export([gen_acs_by_filename/2, gen_acs_by_list/2]).
+-export([matches/2, is_pattern/2, replace/2, replace/3]).
 
--define(MOD, acs).
-
-gen_by_filename(Filename) ->
+gen_acs_by_filename(Filename, ModName) when is_atom(ModName) ->
     case file:read_file(Filename) of
         {ok, Content} ->
             StrList = binary:split(unicode:characters_to_binary(Content), [<<"\r\n">>, <<"\n">>], [trim_all, global]),
-            do_build(StrList);
+            do_build(StrList, ModName);
         Err ->
             Err
     end.
 
-gen_by_list(StrList) ->
-    do_build(StrList).
+gen_acs_by_list(StrList, ModName) when is_atom(ModName) ->
+    do_build(StrList, ModName).
 
 %% 构建AC算法所需的必要结构
-do_build(StrList) ->
+do_build(StrList, ModName) ->
     RootState = 0,                                  % 从根节点开始遍历
     SuccessMap = #{},                               % 前缀树结构
     OutputMap = #{},                                % 匹配上的字符串输出结构
     FailureMap = #{},                               % 创建失配结构
     {NewSuccessMap, NewOutputMap} = do_build_success(StrList, RootState, SuccessMap, OutputMap),
     NewFailureMap = do_build_failure([RootState], NewSuccessMap, FailureMap),
-    gen_ac_file(NewSuccessMap, NewFailureMap, NewOutputMap).
+    gen_ac_file(NewSuccessMap, NewFailureMap, NewOutputMap, ModName).
 
 %% 构建前缀树结构
 do_build_success([Str | T], MaxState, SuccessMap, OutputMap) ->
@@ -91,15 +89,15 @@ do_find_failure_node({_ParentChar, _ParentState, NextIter}, Char, State, Success
 do_find_failure_node(none, _Char, _State, _SuccessMap, FailureMap) ->
     FailureMap.
 
-gen_ac_file(SuccessMap, FailureMap, OutputMap) ->
-    ModStr = atom_to_list(?MOD),
-    {ok, Content} = file:read_file(code:priv_dir(aho_corasick) ++ "/" ++ ModStr ++ ".template"),
+gen_ac_file(SuccessMap, FailureMap, OutputMap, ModName) ->
+    {ok, Content} = file:read_file(code:priv_dir(aho_corasick) ++ "/acs.template"),
     Success = gen_success(SuccessMap),
     Failure = gen_failure(FailureMap, OutputMap),
-    Forms = scan_and_parse(unicode:characters_to_list(<<Content/binary, Success/binary, Failure/binary>>), 1),
-    {ok, ?MOD, Binary} = compile:forms(Forms, [deterministic, no_line_info]),
-    {module, ?MOD} = code:load_binary(?MOD, ?MOD, Binary),
-    ok = file:write_file(code:lib_dir(aho_corasick) ++ "/ebin/" ++ ModStr ++ ".beam", Binary).
+    Str = unicode:characters_to_list(<<(iolist_to_binary(io_lib:format(Content, [ModName])))/binary, Success/binary, Failure/binary>>),
+    Forms = scan_and_parse(Str, 1),
+    {ok, ModName, Binary} = compile:forms(Forms, [deterministic, no_line_info]),
+    {module, ModName} = code:load_binary(ModName, ModName, Binary),
+    ok = file:write_file(code:lib_dir(aho_corasick) ++ "/ebin/" ++ atom_to_list(ModName) ++ ".beam", Binary).
 
 gen_success(SuccessMap) ->
     Fun =
@@ -141,14 +139,18 @@ scan_and_parse(Text, Line) ->
             []
     end.
 
-matches(Subject) ->
-    ?MOD:matches(Subject).
+-spec matches(AcsMod :: module(), Subject :: binary()) -> Found :: [binary:part()].
+matches(AcsMod, Subject) ->
+    AcsMod:matches(Subject).
 
-is_pattern(Subject) ->
-    ?MOD:is_pattern(Subject).
+-spec is_pattern(AcsMod :: module(), Subject :: binary()) -> boolean().
+is_pattern(AcsMod, Subject) ->
+    AcsMod:is_pattern(Subject).
 
-replace(Subject) ->
-    ?MOD:replace(Subject, <<"*"/utf8>>).
+-spec replace(AcsMod :: module(), Subject :: binary()) -> Return :: binary().
+replace(AcsMod, Subject) ->
+    AcsMod:replace(Subject, <<"*"/utf8>>).
 
-replace(Subject, Replacement) ->
-    ?MOD:replace(Subject, Replacement).
+-spec replace(AcsMod :: module(), Subject :: binary(), Replacement :: binary()) -> Return :: binary().
+replace(AcsMod, Subject, Replacement) ->
+    AcsMod:replace(Subject, Replacement).
