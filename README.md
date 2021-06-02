@@ -26,8 +26,13 @@ aho_corasick
     爱国爱国爱国爱国爱国b
     ok
 
+如何调试 How to debug
+------
+编辑`rebar.config`文件，添加如下内容，再次执行`aho_corasick:gen_acs_by_list/2`生成源码文件
 
-
+    {erl_opts, [
+        {d, 'DEBUG'}
+    ]}.
 
 版本要求 OTP Version
 -----

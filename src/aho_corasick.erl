@@ -5,18 +5,18 @@
 -export([matches/2, is_pattern/2, replace/2, replace/3]).
 
 -spec gen_acs_by_filename(Filename :: file:name_all(), ModName :: module()) -> Result when
-    Result :: ok|{error, posix() | badarg | terminated | system_limit}.
+    Result :: ok|{error, file:posix() | badarg | terminated | system_limit}.
 gen_acs_by_filename(Filename, ModName) when is_atom(ModName) ->
     case file:read_file(Filename) of
         {ok, Content} ->
-            StrList = binary:split(unicode:characters_to_binary(Content), [<<"\r\n">>, <<"\n">>], [trim_all, global]),
+            StrList = binary:split(unicode:characters_to_binary(Content), [<<"\r\n">>, <<"\n">>, <<"\r">>], [trim_all, global]),
             do_build(StrList, ModName);
         Err ->
             Err
     end.
 
--spec gen_acs_by_list([binary()], ModName :: module()) ->  Result when
-    Result :: ok|{error, posix() | badarg | terminated | system_limit}.
+-spec gen_acs_by_list([binary()], ModName :: module()) -> Result when
+    Result :: ok|{error, file:posix() | badarg | terminated | system_limit}.
 gen_acs_by_list(StrList, ModName) when is_atom(ModName) ->
     do_build(StrList, ModName).
 
@@ -93,6 +93,18 @@ do_find_failure_node({_ParentChar, _ParentState, NextIter}, Char, State, Success
 do_find_failure_node(none, _Char, _State, _SuccessMap, FailureMap) ->
     FailureMap.
 
+-ifdef(DEBUG).
+%% 生成源码，并写入文件，便于查找错误
+gen_beam_code(SuccessMap, FailureMap, OutputMap, ModName) ->
+    {ok, Content} = file:read_file(code:priv_dir(aho_corasick) ++ "/acs.template"),
+    Success = gen_success(SuccessMap),
+    Failure = gen_failure(FailureMap, OutputMap),
+    Binary = <<(iolist_to_binary(io_lib:format(Content, [ModName])))/binary, Success/binary, Failure/binary>>,
+    FullFilename = code:lib_dir(aho_corasick) ++ "/src/" ++ atom_to_list(ModName) ++ ".erl",
+    FullOutDir = code:lib_dir(aho_corasick) ++ "/ebin/",
+    file:write_file(FullFilename, Binary),
+    compile:file(FullFilename, [{outdir, FullOutDir}, debug_info]).
+-else.
 %% 生成二进制代码，并写入文件，便于下次启动载入
 gen_beam_code(SuccessMap, FailureMap, OutputMap, ModName) ->
     {ok, Content} = file:read_file(code:priv_dir(aho_corasick) ++ "/acs.template"),
@@ -104,6 +116,16 @@ gen_beam_code(SuccessMap, FailureMap, OutputMap, ModName) ->
     {module, ModName} = code:load_binary(ModName, ModName, Binary),
     ok = file:write_file(code:lib_dir(aho_corasick) ++ "/ebin/" ++ atom_to_list(ModName) ++ ".beam", Binary).
 
+scan_and_parse(Text, Line) ->
+    case erl_scan:tokens([], Text, Line) of
+        {done, {ok, Tokens, NLine}, T} ->
+            {ok, Forms} = erl_parse:parse_form(Tokens),
+            [Forms | scan_and_parse(T, NLine)];
+        {more, _Continuation} ->
+            []
+    end.
+-endif.
+
 gen_success(SuccessMap) ->
     Fun =
         fun(State, ChildSuccessMap, Acc) ->
@@ -114,7 +136,6 @@ gen_success(SuccessMap) ->
                 _ ->
                     <<Acc/binary, "success(", (integer_to_binary(State))/binary, ") -> ", (iolist_to_binary(io_lib:format(<<"~w">>, [ChildSuccessMap])))/binary, ";\n">>
             end
-
         end,
     Content = maps:fold(Fun, <<>>, SuccessMap),
     <<Content/binary, "success(_) -> false.\n\n">>.
@@ -141,15 +162,6 @@ gen_failure(FailureMap, OutputMap) ->
         end,
     Content2 = maps:fold(Fun2, <<>>, OutputMap),
     <<Content1/binary, Content2/binary, "failure(_) -> {0, undefined}.\n\n">>.
-
-scan_and_parse(Text, Line) ->
-    case erl_scan:tokens([], Text, Line) of
-        {done, {ok, Tokens, NLine}, T} ->
-            {ok, Forms} = erl_parse:parse_form(Tokens),
-            [Forms | scan_and_parse(T, NLine)];
-        {more, _Continuation} ->
-            []
-    end.
 
 -spec matches(AcsMod :: module(), Subject :: binary()) -> Found :: [binary:part()].
 matches(AcsMod, Subject) ->
