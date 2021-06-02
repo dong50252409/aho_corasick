@@ -18,6 +18,16 @@ aho_corasick
     <<"abccab">>
     4> aho_corasick:matches(ModName, Content).
     [{4,2},{4,1},{3,1},{2,1},{1,2},{0,2},{0,1}]
+    5> aho_corasick:is_pattern(ModName, Content).
+    true
+    6> aho_corasick:replace(ModName, Content).
+    <<"*****b">>
+    7> io:format("~ts~n",[aho_corasick:replace(ModName, Content, <<"爱国"/utf8>>)]).  
+    爱国爱国爱国爱国爱国b
+    ok
+
+
+
 
 版本要求 OTP Version
 -----

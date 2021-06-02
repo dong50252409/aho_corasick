@@ -4,6 +4,8 @@
 -export([gen_acs_by_filename/2, gen_acs_by_list/2]).
 -export([matches/2, is_pattern/2, replace/2, replace/3]).
 
+-spec gen_acs_by_filename(Filename :: file:name_all(), ModName :: module()) -> Result when
+    Result :: ok|{error, posix() | badarg | terminated | system_limit}.
 gen_acs_by_filename(Filename, ModName) when is_atom(ModName) ->
     case file:read_file(Filename) of
         {ok, Content} ->
@@ -13,6 +15,8 @@ gen_acs_by_filename(Filename, ModName) when is_atom(ModName) ->
             Err
     end.
 
+-spec gen_acs_by_list([binary()], ModName :: module()) ->  Result when
+    Result :: ok|{error, posix() | badarg | terminated | system_limit}.
 gen_acs_by_list(StrList, ModName) when is_atom(ModName) ->
     do_build(StrList, ModName).
 
@@ -24,7 +28,7 @@ do_build(StrList, ModName) ->
     FailureMap = #{},                               % 创建失配结构
     {NewSuccessMap, NewOutputMap} = do_build_success(StrList, RootState, SuccessMap, OutputMap),
     NewFailureMap = do_build_failure([RootState], NewSuccessMap, FailureMap),
-    gen_ac_file(NewSuccessMap, NewFailureMap, NewOutputMap, ModName).
+    gen_beam_code(NewSuccessMap, NewFailureMap, NewOutputMap, ModName).
 
 %% 构建前缀树结构
 do_build_success([Str | T], MaxState, SuccessMap, OutputMap) ->
@@ -89,7 +93,8 @@ do_find_failure_node({_ParentChar, _ParentState, NextIter}, Char, State, Success
 do_find_failure_node(none, _Char, _State, _SuccessMap, FailureMap) ->
     FailureMap.
 
-gen_ac_file(SuccessMap, FailureMap, OutputMap, ModName) ->
+%% 生成二进制代码，并写入文件，便于下次启动载入
+gen_beam_code(SuccessMap, FailureMap, OutputMap, ModName) ->
     {ok, Content} = file:read_file(code:priv_dir(aho_corasick) ++ "/acs.template"),
     Success = gen_success(SuccessMap),
     Failure = gen_failure(FailureMap, OutputMap),
@@ -102,7 +107,14 @@ gen_ac_file(SuccessMap, FailureMap, OutputMap, ModName) ->
 gen_success(SuccessMap) ->
     Fun =
         fun(State, ChildSuccessMap, Acc) ->
-            <<Acc/binary, "success(", (integer_to_binary(State))/binary, ") -> ", (iolist_to_binary(io_lib:format(<<"~w">>, [ChildSuccessMap])))/binary, ";\n">>
+            case maps:size(ChildSuccessMap) of
+                1 ->
+                    [KV] = maps:to_list(ChildSuccessMap),
+                    <<Acc/binary, "success(", (integer_to_binary(State))/binary, ") -> ", (iolist_to_binary(io_lib:format(<<"~w">>, [KV])))/binary, ";\n">>;
+                _ ->
+                    <<Acc/binary, "success(", (integer_to_binary(State))/binary, ") -> ", (iolist_to_binary(io_lib:format(<<"~w">>, [ChildSuccessMap])))/binary, ";\n">>
+            end
+
         end,
     Content = maps:fold(Fun, <<>>, SuccessMap),
     <<Content/binary, "success(_) -> false.\n\n">>.

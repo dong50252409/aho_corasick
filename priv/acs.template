@@ -9,6 +9,9 @@ matches(Subject) ->
 
 matches_1(<<Word/utf8, T/binary>> = Subject, State, Index, Found) ->
     case success(State) of
+        {Word, NextState} ->
+            NewFound = get_output(NextState, Index, Found),
+            matches_1(T, NextState, Index + 1, NewFound);
         #{Word := NextState} ->
             NewFound = get_output(NextState, Index, Found),
             matches_1(T, NextState, Index + 1, NewFound);
@@ -37,6 +40,13 @@ is_pattern(Subject) ->
 
 is_pattern_1(<<Word/utf8, T/binary>> = Subject, State) ->
     case success(State) of
+        {Word, NextState} ->
+            case is_pattern_2(NextState) of
+                true ->
+                    true;
+                false ->
+                    is_pattern_1(T, NextState)
+            end;
         #{Word := NextState} ->
             case is_pattern_2(NextState) of
                 true ->
@@ -69,6 +79,9 @@ replace(Subject, Replacement) ->
 
 replace_1(<<Word/utf8, T/binary>> = Subject, State, Replacement, Result) ->
     case success(State) of
+        {Word, NextState} ->
+            Result1 = try_replace(NextState, Replacement, [Word | Result]),
+            replace_1(T, NextState, Replacement, Result1);
         #{Word := NextState} ->
             Result1 = try_replace(NextState, Replacement, [Word | Result]),
             replace_1(T, NextState, Replacement, Result1);
